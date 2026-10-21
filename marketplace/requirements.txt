@@ -1,6 +1,0 @@
-fastapi==0.115.12
-uvicorn==0.34.2
-psycopg==3.2.9
-PyJWT==2.10.1
-PyYAML==6.0.2
-datamodel-code-generator==0.30.1
