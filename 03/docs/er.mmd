@@ -1,0 +1,51 @@
+erDiagram
+    FLIGHTS ||--o{ SEAT_RESERVATIONS : contains
+    RESERVATION_GUARDS ||--o| SEAT_RESERVATIONS : guards
+    FLIGHTS ||--o{ BOOKINGS : "logical flight_id"
+    BOOKINGS |o--|| SEAT_RESERVATIONS : "logical booking_id"
+    FLIGHTS {
+        uuid id PK
+        string flight_number
+        string airline
+        string origin
+        string destination
+        timestamp departure_at
+        timestamp arrival_at
+        int total_seats
+        int available_seats
+        bigint price_minor
+        enum status
+    }
+    SEAT_RESERVATIONS {
+        uuid id PK
+        uuid booking_id UK, FK
+        uuid flight_id FK
+        int seat_count
+        enum status
+    }
+    RESERVATION_GUARDS {
+        uuid booking_id PK
+        bool release_requested
+    }
+    BOOKINGS {
+        uuid id PK
+        string user_id
+        uuid flight_id
+        string passenger_name
+        string passenger_email
+        int seat_count
+        bigint total_price_minor
+        enum status
+    }
+    BOOKING_OPERATIONS {
+        uuid id PK
+        uuid booking_id
+        enum kind
+        string idempotency_key UK
+        enum state
+        jsonb payload
+    }
+    CACHE_STATE {
+        int id PK
+        bigint version
+    }

@@ -1,0 +1,157 @@
+name: flight-booking
+
+x-redis-health: &redis-health
+  test: ["CMD", "redis-cli", "ping"]
+  interval: 3s
+  timeout: 2s
+  retries: 15
+
+x-sentinel: &sentinel
+  image: redis:7.4-alpine
+  command: ["sh", "/config/start-sentinel.sh"]
+  restart: unless-stopped
+  depends_on:
+    redis-primary: {condition: service_healthy}
+    redis-replica: {condition: service_healthy}
+  healthcheck:
+    test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+    interval: 3s
+    timeout: 2s
+    retries: 15
+
+services:
+  booking-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: booking
+      POSTGRES_USER: booking
+      POSTGRES_PASSWORD: booking-local
+      TZ: UTC
+    volumes: ["booking-db:/var/lib/postgresql/data"]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U booking -d booking"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  flight-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: flight
+      POSTGRES_USER: flight
+      POSTGRES_PASSWORD: flight-local
+      TZ: UTC
+    volumes: ["flight-db:/var/lib/postgresql/data"]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flight -d flight"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  flight-service:
+    build: {context: ., dockerfile: flight-service.Dockerfile}
+    environment:
+      DATABASE_URL: postgresql+psycopg://flight:flight-local@flight-db:5432/flight
+      FLIGHT_API_KEY: ${FLIGHT_API_KEY:-local-development-key-change-me}
+      REDIS_SENTINELS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      REDIS_MASTER_NAME: flight-cache
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-300}
+    depends_on:
+      flight-db: {condition: service_healthy}
+      sentinel-1: {condition: service_healthy}
+      sentinel-2: {condition: service_healthy}
+      sentinel-3: {condition: service_healthy}
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "python", "scripts/health-flight.py"]
+      interval: 10s
+      timeout: 6s
+      retries: 10
+
+  booking-service:
+    build: {context: ., dockerfile: booking-service.Dockerfile}
+    environment:
+      DATABASE_URL: postgresql+psycopg://booking:booking-local@booking-db:5432/booking
+      FLIGHT_API_KEY: ${FLIGHT_API_KEY:-local-development-key-change-me}
+      FLIGHT_GRPC_ADDRESS: flight-service:50051
+      GRPC_MAX_ATTEMPTS: ${GRPC_MAX_ATTEMPTS:-3}
+      GRPC_ATTEMPT_TIMEOUT: ${GRPC_ATTEMPT_TIMEOUT:-1}
+      GRPC_TOTAL_TIMEOUT: ${GRPC_TOTAL_TIMEOUT:-4}
+      RETRY_INITIAL_DELAY: ${RETRY_INITIAL_DELAY:-0.1}
+      CB_FAILURE_THRESHOLD: ${CB_FAILURE_THRESHOLD:-5}
+      CB_OPEN_SECONDS: ${CB_OPEN_SECONDS:-15}
+      RECOVERY_INTERVAL_SECONDS: ${RECOVERY_INTERVAL_SECONDS:-2}
+    ports: ["127.0.0.1:${BOOKING_PORT:-8000}:8000"]
+    depends_on:
+      booking-db: {condition: service_healthy}
+      flight-service: {condition: service_healthy}
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis-primary:
+    image: redis:7.4-alpine
+    command: ["sh", "/config/start-node.sh"]
+    restart: unless-stopped
+    environment: {NODE_IP: 172.30.87.10}
+    volumes:
+      - redis-primary:/data
+      - ./infra/redis/start-node.sh:/config/start-node.sh:ro
+    networks: {backend: {ipv4_address: 172.30.87.10}}
+    healthcheck: *redis-health
+
+  redis-replica:
+    image: redis:7.4-alpine
+    command: ["sh", "/config/start-node.sh"]
+    restart: unless-stopped
+    environment: {NODE_IP: 172.30.87.11, INITIAL_PRIMARY: 172.30.87.10}
+    depends_on:
+      redis-primary: {condition: service_healthy}
+    volumes:
+      - redis-replica:/data
+      - ./infra/redis/start-node.sh:/config/start-node.sh:ro
+    networks: {backend: {ipv4_address: 172.30.87.11}}
+    healthcheck: *redis-health
+
+  sentinel-1:
+    <<: *sentinel
+    environment: {NODE_IP: 172.30.87.21}
+    volumes:
+      - sentinel-1:/data
+      - ./infra/redis/start-sentinel.sh:/config/start-sentinel.sh:ro
+    networks: {backend: {ipv4_address: 172.30.87.21}}
+
+  sentinel-2:
+    <<: *sentinel
+    environment: {NODE_IP: 172.30.87.22}
+    volumes:
+      - sentinel-2:/data
+      - ./infra/redis/start-sentinel.sh:/config/start-sentinel.sh:ro
+    networks: {backend: {ipv4_address: 172.30.87.22}}
+
+  sentinel-3:
+    <<: *sentinel
+    environment: {NODE_IP: 172.30.87.23}
+    volumes:
+      - sentinel-3:/data
+      - ./infra/redis/start-sentinel.sh:/config/start-sentinel.sh:ro
+    networks: {backend: {ipv4_address: 172.30.87.23}}
+
+volumes:
+  booking-db:
+  flight-db:
+  redis-primary:
+  redis-replica:
+  sentinel-1:
+  sentinel-2:
+  sentinel-3:
+
+networks:
+  backend:
+    ipam:
+      config: [{subnet: 172.30.87.0/24}]
