@@ -1,0 +1,174 @@
+x-check: &check
+  interval: 10s
+  timeout: 15s
+  retries: 18
+  start_period: 20s
+
+x-kafka-env: &kafka-env
+  CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+  KAFKA_PROCESS_ROLES: broker,controller
+  KAFKA_LOG_DIRS: /var/lib/kafka/data
+  KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka1:9093,2@kafka2:9093,3@kafka3:9093
+  KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+  KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+  KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+  KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 2
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 2
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+  KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+  KAFKA_HEAP_OPTS: -Xms128m -Xmx256m
+
+x-kafka: &kafka
+  image: confluentinc/cp-kafka:7.7.1
+  healthcheck:
+    <<: *check
+    test: ["CMD-SHELL", "cub kafka-ready -b localhost:9092 1 4 >/dev/null"]
+
+x-app: &app
+  build: .
+  restart: on-failure
+  healthcheck:
+    <<: *check
+    test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://localhost:8000/health', timeout=3)"]
+
+services:
+  kafka1:
+    <<: *kafka
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 1
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka1:9092
+    volumes: [kafka1:/var/lib/kafka/data]
+  kafka2:
+    <<: *kafka
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 2
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka2:9092
+    volumes: [kafka2:/var/lib/kafka/data]
+  kafka3:
+    <<: *kafka
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 3
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka3:9092
+    volumes: [kafka3:/var/lib/kafka/data]
+
+  registry:
+    image: confluentinc/cp-schema-registry:7.7.1
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: registry
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka1:9092,PLAINTEXT://kafka2:9092,PLAINTEXT://kafka3:9092
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR: 2
+    depends_on:
+      kafka1: {condition: service_healthy}
+      kafka2: {condition: service_healthy}
+      kafka3: {condition: service_healthy}
+    healthcheck:
+      <<: *check
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/subjects"]
+
+  producer:
+    <<: *app
+    command: uvicorn producer:app --host 0.0.0.0 --port 8000
+    environment:
+      GENERATE_EVENTS: ${GENERATE_EVENTS:-1}
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      registry: {condition: service_healthy}
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.3.6.56
+    environment:
+      CLICKHOUSE_USER: cinema
+      CLICKHOUSE_PASSWORD: cinema
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_ALWAYS_RUN_INITDB_SCRIPTS: "1"
+    volumes:
+      - clickhouse:/var/lib/clickhouse
+      - ./clickhouse.sql:/docker-entrypoint-initdb.d/01-cinema.sql:ro
+      - ./movie.proto:/tmp/movie.proto:ro
+    entrypoint:
+      - /bin/bash
+      - -ec
+      - |
+        mkdir -p /var/lib/clickhouse/format_schemas
+        cp /tmp/movie.proto /var/lib/clickhouse/format_schemas/movie.proto
+        exec /entrypoint.sh
+    depends_on:
+      producer: {condition: service_healthy}
+    healthcheck:
+      <<: *check
+      test:
+        - CMD-SHELL
+        - >-
+          clickhouse-client --host clickhouse --user cinema --password cinema --query
+          "SELECT count() FROM system.tables WHERE database=currentDatabase()
+          AND name IN ('events','incoming','ingest','daily')" | grep -qx 4
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: cinema
+      POSTGRES_USER: cinema
+      POSTGRES_PASSWORD: cinema
+    volumes: [postgres:/var/lib/postgresql/data]
+    healthcheck:
+      <<: *check
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "cinema", "-d", "cinema"]
+
+  minio:
+    image: ghcr.io/coollabsio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: cinema
+      MINIO_ROOT_PASSWORD: cinema-secret
+    ports: ["127.0.0.1:9001:9001"]
+    volumes: [objects:/data]
+    healthcheck:
+      <<: *check
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+
+  analytics:
+    <<: *app
+    command: uvicorn analytics:app --host 0.0.0.0 --port 8000
+    environment:
+      AGG_INTERVAL_SECONDS: ${AGG_INTERVAL_SECONDS:-60}
+    ports: ["127.0.0.1:8001:8000"]
+    depends_on:
+      clickhouse: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    environment:
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource 4.8.2
+      GF_SECURITY_ADMIN_PASSWORD: cinema
+    ports: ["127.0.0.1:3000:3000"]
+    volumes:
+      - ./grafana-datasource.yml:/etc/grafana/provisioning/datasources/cinema.yml:ro
+      - ./grafana-provider.yml:/etc/grafana/provisioning/dashboards/cinema.yml:ro
+      - ./dashboard.json:/var/lib/grafana/dashboards/cinema.json:ro
+    depends_on:
+      clickhouse: {condition: service_healthy}
+    healthcheck:
+      <<: *check
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health >/dev/null"]
+
+  test:
+    build: .
+    profiles: [test]
+    command: python test_pipeline.py
+    depends_on:
+      clickhouse: {condition: service_healthy}
+
+volumes:
+  kafka1:
+  kafka2:
+  kafka3:
+  clickhouse:
+  postgres:
+  objects:

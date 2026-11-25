@@ -1,0 +1,27 @@
+syntax = "proto2";
+
+message MovieEvent {
+  enum EventType {
+    VIEW_STARTED = 0;
+    VIEW_FINISHED = 1;
+    VIEW_PAUSED = 2;
+    VIEW_RESUMED = 3;
+    LIKED = 4;
+    SEARCHED = 5;
+  }
+  enum DeviceType {
+    MOBILE = 0;
+    DESKTOP = 1;
+    TV = 2;
+    TABLET = 3;
+  }
+
+  required string event_id = 1;       // UUID
+  required string user_id = 2;
+  required string movie_id = 3;
+  required EventType event_type = 4;
+  required int64 timestamp = 5;       // Unix milliseconds, UTC
+  required DeviceType device_type = 6;
+  required string session_id = 7;
+  required uint32 progress_seconds = 8;
+}

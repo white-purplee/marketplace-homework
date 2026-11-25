@@ -1,0 +1,150 @@
+{
+  "uid": "cinema",
+  "title": "Аналитика кинотеатра",
+  "schemaVersion": 40,
+  "version": 1,
+  "timezone": "utc",
+  "refresh": "30s",
+  "time": {
+    "from": "now-8d/d",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Возврат пользователей по когортам",
+      "type": "table",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "cinema-ch"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "cinema-ch"
+          },
+          "editorType": "sql",
+          "queryType": "table",
+          "format": 1,
+          "rawSql": "SELECT toString(cohort) AS cohort_date,\n       maxOrNullIf(value, age = 0) AS `Day 0`,\n       maxOrNullIf(value, age = 1) AS `Day 1`,\n       maxOrNullIf(value, age = 2) AS `Day 2`,\n       maxOrNullIf(value, age = 3) AS `Day 3`,\n       maxOrNullIf(value, age = 4) AS `Day 4`,\n       maxOrNullIf(value, age = 5) AS `Day 5`,\n       maxOrNullIf(value, age = 6) AS `Day 6`,\n       maxOrNullIf(value, age = 7) AS `Day 7`\nFROM (\n    SELECT subtractDays(day, idx - 1) AS cohort, idx - 1 AS age, retention[idx] AS value\n    FROM daily FINAL ARRAY JOIN arrayEnumerate(retention) AS idx\n)\nWHERE $__dateFilter(cohort) AND value IS NOT NULL\nGROUP BY cohort ORDER BY cohort"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^Day [0-7]$/"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 1
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-blues"
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 2,
+      "title": "Активные пользователи за день",
+      "type": "timeseries",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "cinema-ch"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "cinema-ch"
+          },
+          "editorType": "sql",
+          "queryType": "timeseries",
+          "format": 0,
+          "rawSql": "SELECT toDateTime(day, 'UTC') AS time, dau AS DAU FROM daily FINAL WHERE $__dateFilter(day) ORDER BY day"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Конверсия просмотра",
+      "type": "timeseries",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "cinema-ch"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "cinema-ch"
+          },
+          "editorType": "sql",
+          "queryType": "timeseries",
+          "format": 0,
+          "rawSql": "SELECT toDateTime(day, 'UTC') AS time, conversion FROM daily FINAL WHERE $__dateFilter(day) ORDER BY day"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0
+        },
+        "overrides": []
+      }
+    }
+  ]
+}
